@@ -74,6 +74,7 @@ public final class CoreBankingClient {
         session.close();
         return result;
       } catch (SocketTimeoutException e) {
+        session.close();
         throw new CoreTimeoutException(
             operation + ": no response from " + baseUrl + " within "
                 + timeouts.readMillis() + " ms", e);
