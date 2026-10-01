@@ -42,7 +42,6 @@ public class TransferService {
             .flatMap(destination -> process(transferId, request, amount, source, destination)))
         .switchIfEmpty(Mono.defer(() ->
             save(transferId, request, amount, null, "REJECTED", "ACCOUNT_NOT_FOUND", null)))
-        .retry(3)
         .onErrorResume(CoreTimeoutException.class, e -> {
           log.error("Core banking timeout for transfer {}", transferId, e);
           return save(transferId, request, amount, null, "FAILED", "CORE_TIMEOUT", null);
@@ -81,9 +80,10 @@ public class TransferService {
         conversion.creditCurrency());
     return Mono.just(posting)
         .map(coreBankingClient::post)
-        .flatMap(result -> result.status() == PostingResult.Status.POSTED
-            ? save(transferId, request, amount, conversion, "COMPLETED", null, result.coreTxnId())
-            : save(transferId, request, amount, conversion, "REJECTED", "CORE_REJECTED", null));
+        .flatMap(result -> saveCoreResult(
+            transferId, request, amount, conversion, result))
+        .onErrorResume(CoreTimeoutException.class,
+            e -> inquireAfterTimeout(transferId, request, amount, conversion));
   }
 
   private Mono<TransferEntity> save(String transferId, TransferRequest request, BigDecimal amount,
@@ -98,5 +98,34 @@ public class TransferService {
         coreTxnId, request.description(), now, now);
     log.info("Transfer {} {} {}", transferId, status, reasonCode == null ? "" : reasonCode);
     return template.insert(transfer);
+  }
+
+  private Mono<TransferEntity> inquireAfterTimeout(
+      String transferId,
+      TransferRequest request,
+      BigDecimal amount,
+      Conversion conversion) {
+
+    return Mono.fromCallable(() -> coreBankingClient.inquire(transferId))
+        .flatMap(result -> result
+            .map(posting -> saveCoreResult(
+                transferId, request, amount, conversion, posting))
+            .orElseGet(() -> save(
+                transferId, request, amount, conversion,
+                "FAILED", "CORE_TIMEOUT", null)));
+  }
+
+  private Mono<TransferEntity> saveCoreResult(
+      String transferId,
+      TransferRequest request,
+      BigDecimal amount,
+      Conversion conversion,
+      PostingResult result) {
+
+    return result.status() == PostingResult.Status.POSTED
+        ? save(transferId, request, amount, conversion,
+            "COMPLETED", null, result.coreTxnId())
+        : save(transferId, request, amount, conversion,
+            "REJECTED", "CORE_REJECTED", null);
   }
 }
