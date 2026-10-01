@@ -6,6 +6,7 @@ import com.acme.transfer.repository.TransferEntity;
 import com.acme.transfer.service.IdempotencyService;
 import com.acme.transfer.service.TransferService;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -45,14 +46,30 @@ public class TransferController {
     if (idempotencyKey == null) {
       return transferService.createTransfer(request).map(this::toResponse);
     }
-    return idempotencyService.findExisting(idempotencyKey)
-        .map(existing -> ResponseEntity.status(existing.responseStatus())
-            .body((Object) idempotencyService.readResponse(existing)))
-        .switchIfEmpty(Mono.defer(() -> transferService.createTransfer(request)
-            .map(this::toResponse)
-            .flatMap(response -> idempotencyService.save(idempotencyKey, request,
-                    response.getStatusCode().value(), (TransferResource) response.getBody())
-                .thenReturn(response))))
+    return idempotencyService.claim(idempotencyKey, request)
+      .flatMap(claimed -> {
+        if (claimed) {
+          return transferService.createTransfer(request)
+              .map(this::toResponse)
+              .flatMap(response -> idempotencyService.save(
+                      idempotencyKey,
+                      request,
+                      response.getStatusCode().value(),
+                      (TransferResource) response.getBody())
+                  .thenReturn(response));
+        }
+
+        return idempotencyService.findExisting(idempotencyKey)
+          .filter(existing -> existing.responseStatus() != null)
+          .map(existing -> ResponseEntity.status(existing.responseStatus())
+              .body((Object) idempotencyService.readResponse(existing)))
+          .repeatWhenEmpty(repeat -> repeat
+              .delayElements(Duration.ofMillis(100))
+              .take(20))
+          .switchIfEmpty(Mono.error(new ResponseStatusException(
+              HttpStatus.SERVICE_UNAVAILABLE,
+              "Idempotency request is still being processed")));
+      })
         .onErrorMap(e -> !(e instanceof ResponseStatusException),
             e -> new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage(), e))
         .doOnError(e -> ResponseEntity.internalServerError().body(Map.of("error", e.getMessage())));

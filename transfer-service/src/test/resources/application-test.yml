@@ -1,0 +1,10 @@
+spring:
+  r2dbc:
+    url: r2dbc:postgresql://localhost:15432/transfers
+    username: transfers
+    password: transfers
+
+  flyway:
+    url: jdbc:postgresql://localhost:15432/transfers
+    user: transfers
+    password: transfers

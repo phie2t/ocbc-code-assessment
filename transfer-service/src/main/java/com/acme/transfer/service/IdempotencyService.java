@@ -26,14 +26,14 @@ public class IdempotencyService {
   }
 
   public Mono<IdempotencyEntity> save(String idempotencyKey, TransferRequest request, int status,
-                                      TransferResource response) {
+                                    TransferResource response) {
     String body;
     try {
       body = objectMapper.writeValueAsString(response);
     } catch (JsonProcessingException e) {
       return Mono.error(e);
     }
-    return template.insert(new IdempotencyEntity(idempotencyKey,
+    return template.update(new IdempotencyEntity(idempotencyKey,
         Integer.toHexString(request.hashCode()), response.transferId(), status, body, Instant.now()));
   }
 
@@ -43,5 +43,24 @@ public class IdempotencyService {
     } catch (JsonProcessingException e) {
       throw new IllegalStateException("Stored response is not readable", e);
     }
+  }
+
+  public Mono<Boolean> claim(String idempotencyKey, TransferRequest request) {
+    return template.getDatabaseClient()
+        .sql("""
+            INSERT INTO idempotency_keys (
+                idempotency_key,
+                request_hash,
+                created_at
+            )
+            VALUES (:key, :requestHash, :createdAt)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            """)
+        .bind("key", idempotencyKey)
+        .bind("requestHash", Integer.toHexString(request.hashCode()))
+        .bind("createdAt", Instant.now())
+        .fetch()
+        .rowsUpdated()
+        .map(rows -> rows == 1);
   }
 }
