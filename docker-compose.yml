@@ -6,10 +6,12 @@ services:
       POSTGRES_USER: transfers
       POSTGRES_PASSWORD: transfers
     ports:
-      - "5432:5432"
+      - "15432:5432"
 
   mock-bank:
-    build: ./mock-bank
+    build:
+      context: .
+      dockerfile: mock-bank/Dockerfile
     ports:
       - "9090:9090"
 
