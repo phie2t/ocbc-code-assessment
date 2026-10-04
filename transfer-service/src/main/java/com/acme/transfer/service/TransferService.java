@@ -17,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 @Slf4j
 @Service
@@ -78,8 +79,8 @@ public class TransferService {
     PostingRequest posting = new PostingRequest(transferId, request.sourceAccount(),
         request.destinationAccount(), amount, request.currency(), conversion.creditAmount(),
         conversion.creditCurrency());
-    return Mono.just(posting)
-        .map(coreBankingClient::post)
+    return Mono.fromCallable(() -> coreBankingClient.post(posting))
+        .subscribeOn(Schedulers.boundedElastic())
         .flatMap(result -> saveCoreResult(
             transferId, request, amount, conversion, result))
         .onErrorResume(CoreTimeoutException.class,
@@ -107,6 +108,7 @@ public class TransferService {
       Conversion conversion) {
 
     return Mono.fromCallable(() -> coreBankingClient.inquire(transferId))
+        .subscribeOn(Schedulers.boundedElastic())
         .flatMap(result -> result
             .map(posting -> saveCoreResult(
                 transferId, request, amount, conversion, posting))
