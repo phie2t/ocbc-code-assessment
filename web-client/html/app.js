@@ -87,7 +87,20 @@
   }
 
   function details(rows) {
-    return h('dl', {}, rows.map(([term, value]) => [h('dt', { text: term }), h('dd', { text: value ?? '–' })]));
+    const dl = document.createElement('dl');
+
+    for (const [term, value] of rows) {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+
+      const dd = document.createElement('dd');
+      dd.textContent = value ?? '–';
+
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    }
+
+    return dl;
   }
 
   function card(label, result) {
