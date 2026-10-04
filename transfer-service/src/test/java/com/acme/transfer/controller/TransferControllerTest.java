@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -95,5 +96,90 @@ class TransferControllerTest {
     assertEquals(5, responses.size());
 
     verify(transferService, times(1)).createTransfer(request);
+  }
+
+  @Test
+  void reusedIdempotencyKeyWithDifferentRequestReturnsUnprocessableEntity() {
+    TransferService transferService = mock(TransferService.class);
+    IdempotencyService idempotencyService = mock(IdempotencyService.class);
+
+    TransferController controller =
+        new TransferController(transferService, idempotencyService);
+
+    String idempotencyKey = "test-key-111";
+
+    TransferRequest originalRequest = new TransferRequest(
+        "2000000001",
+        "2000000002",
+        "150.00",
+        "USD",
+        "original request");
+
+    TransferRequest differentRequest = new TransferRequest(
+        "2000000001",
+        "2000000002",
+        "200.00",
+        "USD",
+        "different request");
+
+    IdempotencyEntity existing = new IdempotencyEntity(
+        idempotencyKey,
+        Integer.toHexString(originalRequest.hashCode()),
+        "transfer-1",
+        201,
+        "{\"transferId\":\"transfer-1\"}",
+        Instant.now());
+
+    when(idempotencyService.claim(eq(idempotencyKey), eq(differentRequest)))
+        .thenReturn(Mono.just(false));
+
+    when(idempotencyService.findExisting(idempotencyKey))
+        .thenReturn(Mono.just(existing));
+
+    ApiException exception = org.junit.jupiter.api.Assertions.assertThrows(
+        ApiException.class,
+        () -> controller.createTransfer(idempotencyKey, differentRequest).block());
+
+    assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, exception.getStatus());
+    assertEquals("IDEMPOTENCY_KEY_REUSED", exception.getCode());
+  }
+
+  @Test
+  void idempotencyRequestStillProcessingReturnsConflict() {
+    TransferService transferService = mock(TransferService.class);
+    IdempotencyService idempotencyService = mock(IdempotencyService.class);
+
+    TransferController controller =
+        new TransferController(transferService, idempotencyService);
+
+    String idempotencyKey = "test-key-111-processing";
+
+    TransferRequest request = new TransferRequest(
+        "2000000001",
+        "2000000002",
+        "150.00",
+        "USD",
+        "still processing");
+
+    IdempotencyEntity existing = new IdempotencyEntity(
+        idempotencyKey,
+        Integer.toHexString(request.hashCode()),
+        null,
+        null,
+        null,
+        Instant.now());
+
+    when(idempotencyService.claim(eq(idempotencyKey), eq(request)))
+        .thenReturn(Mono.just(false));
+
+    when(idempotencyService.findExisting(idempotencyKey))
+        .thenReturn(Mono.just(existing));
+
+    ApiException exception = org.junit.jupiter.api.Assertions.assertThrows(
+        ApiException.class,
+        () -> controller.createTransfer(idempotencyKey, request).block());
+
+    assertEquals(HttpStatus.CONFLICT, exception.getStatus());
+    assertEquals("REQUEST_IN_PROGRESS", exception.getCode());
   }
 }

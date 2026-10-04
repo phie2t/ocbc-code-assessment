@@ -7,7 +7,6 @@ import com.acme.transfer.service.IdempotencyService;
 import com.acme.transfer.service.TransferService;
 import java.math.BigDecimal;
 import java.time.Duration;
-import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,7 +40,7 @@ public class TransferController {
     log.info("Transfer request {}: {}", idempotencyKey, request);
     String error = validate(request);
     if (error != null) {
-      return Mono.just(ResponseEntity.badRequest().body(Map.of("error", error)));
+      throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", error);
     }
     if (idempotencyKey == null) {
       return transferService.createTransfer(request).map(this::toResponse);
@@ -59,20 +58,32 @@ public class TransferController {
                   .thenReturn(response));
         }
 
+        String requestHash = Integer.toHexString(request.hashCode());
+
         return idempotencyService.findExisting(idempotencyKey)
-          .filter(existing -> existing.responseStatus() != null)
-          .map(existing -> ResponseEntity.status(existing.responseStatus())
-              .body((Object) idempotencyService.readResponse(existing)))
-          .repeatWhenEmpty(repeat -> repeat
-              .delayElements(Duration.ofMillis(100))
-              .take(20))
-          .switchIfEmpty(Mono.error(new ResponseStatusException(
-              HttpStatus.SERVICE_UNAVAILABLE,
-              "Idempotency request is still being processed")));
-      })
-        .onErrorMap(e -> !(e instanceof ResponseStatusException),
-            e -> new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage(), e))
-        .doOnError(e -> ResponseEntity.internalServerError().body(Map.of("error", e.getMessage())));
+            .flatMap(existing -> {
+              if (!existing.requestHash().equals(requestHash)) {
+                return Mono.error(new ApiException(
+                    HttpStatus.UNPROCESSABLE_ENTITY,
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "Idempotency key has already been used for a different request."));
+              }
+
+              if (existing.responseStatus() != null) {
+                return Mono.just(ResponseEntity.status(existing.responseStatus())
+                    .body((Object) idempotencyService.readResponse(existing)));
+              }
+
+              return Mono.<ResponseEntity<Object>>empty();
+            })
+            .repeatWhenEmpty(repeat -> repeat
+                .delayElements(Duration.ofMillis(100))
+                .take(20))
+            .switchIfEmpty(Mono.error(new ApiException(
+                HttpStatus.CONFLICT,
+                "REQUEST_IN_PROGRESS",
+                "Idempotency request is still being processed")));
+      });
   }
 
   @GetMapping("/{transferId}")
